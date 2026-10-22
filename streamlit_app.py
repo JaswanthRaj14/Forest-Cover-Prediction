@@ -1,14 +1,73 @@
 
 import streamlit as st
-import requests
+import pandas as pd
+import joblib
+import gdown
+from pathlib import Path
+
+# --------------------------------------------------
+# 1. Page Configuration
+# --------------------------------------------------
 
 st.set_page_config(
     page_title="Forest Cover Prediction",
     page_icon="🌲",
-    layout="wide"
+    layout="wide",
 )
 
-API_URL = "http://127.0.0.1:8000/predict"
+st.title("🌲 Forest Cover Prediction")
+st.write(
+    "Predict one of seven forest cover types using "
+    "terrain, wilderness, and soil information."
+)
+
+st.info(
+    "Enter the terrain measurements and select the "
+    "wilderness area and soil type to make a prediction."
+)
+
+# --------------------------------------------------
+# 2. Model Configuration
+# --------------------------------------------------
+
+MODEL_PATH = Path(__file__).resolve().parent / "forest_cover_model.pkl"
+DRIVE_FILE_ID = "15swC0zRpHywYzCGOM0cIzrNUcv1Ir2nH"
+
+COVER_NAMES = {
+    1: "Spruce/Fir",
+    2: "Lodgepole Pine",
+    3: "Ponderosa Pine",
+    4: "Cottonwood/Willow",
+    5: "Aspen",
+    6: "Douglas-fir",
+    7: "Krummholz",
+}
+
+
+@st.cache_resource
+def load_model():
+    """Download the model if needed, then load it."""
+
+    if not MODEL_PATH.exists():
+        downloaded_file = gdown.download(
+            id=DRIVE_FILE_ID,
+            output=str(MODEL_PATH),
+            quiet=False,
+        )
+
+        if not downloaded_file or not MODEL_PATH.exists():
+            raise RuntimeError(
+                "Model download failed. Check that the "
+                "Google Drive file is accessible to anyone "
+                "with the link."
+            )
+
+    return joblib.load(MODEL_PATH)
+
+
+# --------------------------------------------------
+# 3. Feature Definitions
+# --------------------------------------------------
 
 TERRAIN_FEATURES = [
     "Elevation",
@@ -43,38 +102,26 @@ SOIL_FEATURES = [
     "Soil_Type39", "Soil_Type40",
 ]
 
-COVER_NAMES = {
-    1: "Spruce/Fir",
-    2: "Lodgepole Pine",
-    3: "Ponderosa Pine",
-    4: "Cottonwood/Willow",
-    5: "Aspen",
-    6: "Douglas-fir",
-    7: "Krummholz",
-}
+# These are the exact 52 features used by the trained model.
+MODEL_FEATURES = TERRAIN_FEATURES + WILDERNESS_FEATURES + SOIL_FEATURES
 
-st.title("🌲 Forest Cover Prediction")
-st.write(
-    "Predict one of seven forest cover types using "
-    "terrain, wilderness, and soil information."
-)
 
-st.info(
-    "Enter terrain measurements, select the applicable "
-    "wilderness area, and select the soil type."
-)
+# --------------------------------------------------
+# 4. Input Form
+# --------------------------------------------------
 
 with st.form("prediction_form"):
+
     st.subheader("1. Terrain Features")
 
     features = {}
-
     terrain_columns = st.columns(2)
 
     for i, name in enumerate(TERRAIN_FEATURES):
         with terrain_columns[i % 2]:
             features[name] = st.number_input(
                 name.replace("_", " "),
+                min_value=0.0,
                 value=0.0,
                 step=1.0,
                 key=name,
@@ -107,43 +154,58 @@ with st.form("prediction_form"):
         use_container_width=True,
     )
 
+
+# --------------------------------------------------
+# 5. Make Prediction
+# --------------------------------------------------
+
 if submitted:
-    payload = {
-        "features": {
-            name: float(value)
-            for name, value in features.items()
-        }
-    }
 
     try:
-        with st.spinner("Predicting forest cover..."):
-            response = requests.post(
-                API_URL,
-                json=payload,
-                timeout=30,
-            )
-
-        if response.status_code == 200:
-            result = response.json()
-            cover_type = result["predicted_cover_type"]
-            cover_name = result.get(
-                "predicted_cover_name",
-                COVER_NAMES.get(cover_type, "Unknown"),
-            )
-
-            st.success("Prediction completed successfully!")
-            st.metric("Predicted Cover Type", cover_type)
-            st.subheader(f"🌲 {cover_name}")
-
-        else:
-            st.error(f"API error ({response.status_code})")
-            st.write(response.text)
-
-    except requests.exceptions.ConnectionError:
-        st.error(
-            "Cannot connect to FastAPI. "
-            "Make sure app.py is running on port 8000."
+        # Ensure the input order matches model training.
+        input_df = pd.DataFrame(
+            [[features[name] for name in MODEL_FEATURES]],
+            columns=MODEL_FEATURES,
         )
 
-    except requests.exceptions.RequestException as exc:
-        st.error(f"Request failed: {exc}")
+        with st.spinner(
+            "Loading the model and predicting forest cover..."
+        ):
+            model = load_model()
+            prediction = int(model.predict(input_df)[0])
+
+        cover_name = COVER_NAMES.get(
+            prediction,
+            "Unknown cover type",
+        )
+
+        st.success("Prediction completed successfully!")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.metric(
+                "Predicted Cover Type",
+                prediction,
+            )
+
+        with col2:
+            st.metric(
+                "Predicted Forest",
+                cover_name,
+            )
+
+        st.subheader(f"🌲 {cover_name}")
+
+        st.caption(
+            "This result is a machine-learning prediction, "
+            "not a guarantee of the actual forest cover."
+        )
+
+    except Exception as exc:
+        st.error(
+            "The prediction could not be completed. "
+            "Check the model download, dependencies, and "
+            "model compatibility."
+        )
+        st.exception(exc)
